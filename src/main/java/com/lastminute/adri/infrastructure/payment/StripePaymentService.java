@@ -1,84 +1,81 @@
 package com.lastminute.adri.infrastructure.payment;
 
 import com.github.tomakehurst.wiremock.http.RequestMethod;
-import com.stripe.Stripe;
-import com.stripe.model.Charge;
-import com.stripe.model.Token;
+import org.apache.commons.codec.Charsets;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.math.BigDecimal;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.stream.Collectors;
 
 public class StripePaymentService implements PaymentService {
 
-    private final String USER_AGENT = "Mozilla/5.0";
+    private static final String CHARGES_SUFFIX = "/charges";
+    private static final String TOKENS_SUFFIX = "/tokens";
+    private static final String AUTHORIZATION = "Authorization";
+    private static final String API_ID = "sk_test_2Ri4DVJZVCxsB59oKr8ZtBT7:";
+    private static final String BEARER_API_ID = String.format("Bearer %s", API_ID);
+    private static final String CREDIT_CARD_DATA = "data";
+    private static final String PAYMENT_REQUEST_DATA = "{'amount': %d, 'source': %s}";
+    private static final String PAYMENT_EXCEPTION = "Payment exception";
+
+    private final String urlBase;
+
+    public StripePaymentService(String urlBase) {
+        this.urlBase = urlBase;
+    }
 
     @Override
     public boolean makePayment(BigDecimal coursePrice) {
-        int result = sendPost();
+        String token = getToken();
 
-        if(result == 200) {
-            return true;
-        }
-        return false;
+        int result = sendStripePayment(token, coursePrice);
+
+        return result == 200;
     }
 
-    public boolean makePaymentOld(BigDecimal coursePrice) {
-        // Set your secret key: remember to change this to your live secret key in production
-        // See your keys here: https://dashboard.stripe.com/account/apikeys
-        Stripe.apiKey = "sk_test_2Ri4DVJZVCxsB59oKr8ZtBT7";
-
-        // Get the credit card details submitted by the form
-        String token = getToken().getId();
-
-        // Create a charge: this will charge the user's card
-        Map<String, Object> chargeParams = new HashMap<String, Object>();
-        chargeParams.put("amount", 1000); // Amount in cents
-        chargeParams.put("currency", "eur");
-        chargeParams.put("source", token);
-        chargeParams.put("description", "Example charge");
+    private int sendStripePayment(String token, BigDecimal amount) {
+        String data = String.format(PAYMENT_REQUEST_DATA, amount.longValue(), token);
+        HttpURLConnection connection = createConnection(CHARGES_SUFFIX, data);
 
         try {
-            Charge.create(chargeParams);
-        } catch (Exception e) {
-            throw new PaymentException("Error with payment", e);
-        }
-        return true;
-    }
-
-    private Token getToken() {
-        Stripe.apiKey = "sk_test_2Ri4DVJZVCxsB59oKr8ZtBT7";
-
-        Map<String, Object> tokenParams = new HashMap<String, Object>();
-        Map<String, Object> cardParams = new HashMap<String, Object>();
-        cardParams.put("number", "4242424242424242");
-        cardParams.put("exp_month", 11);
-        cardParams.put("exp_year", 2017);
-        cardParams.put("cvc", "314");
-        tokenParams.put("card", cardParams);
-
-        try {
-            return Token.create(tokenParams);
-        } catch (Exception e) {
-            throw new PaymentException("Error getting token", e);
+            return connection.getResponseCode();
+        } catch (IOException e) {
+            throw new PaymentException(PAYMENT_EXCEPTION, e);
         }
     }
 
-    private int sendPost() {
+    private String getToken() {
+        HttpURLConnection connection = createConnection(TOKENS_SUFFIX, CREDIT_CARD_DATA);
+
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+            return br.lines().collect(Collectors.joining("\n"));
+        } catch (IOException e) {
+            throw new PaymentException(PAYMENT_EXCEPTION, e);
+        }
+    }
+
+    private HttpURLConnection createConnection(String suffix, String requestData) {
         try {
-            String url = "http://localhost:8080";
+            URL obj = new URL(urlBase + suffix);
+            HttpURLConnection connection = (HttpURLConnection) obj.openConnection();
+            connection.setRequestMethod(RequestMethod.POST.getName());
 
-            URL obj = new URL(url);
-            HttpURLConnection con = (HttpURLConnection) obj.openConnection();
-            con.setRequestMethod(RequestMethod.POST.getName());
+            connection.setRequestProperty(AUTHORIZATION, BEARER_API_ID);
 
-            int responseCode = con.getResponseCode();
+            connection.setDoOutput(true);
+            byte[] outputBytes = requestData.getBytes(Charsets.UTF_8);
+            try (OutputStream os = connection.getOutputStream()) {
+                os.write(outputBytes);
+            }
 
-            return responseCode;
+            return connection;
         } catch (Exception exc) {
-            throw new PaymentException("Payment exception", exc);
+            throw new PaymentException(PAYMENT_EXCEPTION, exc);
         }
     }
 }
